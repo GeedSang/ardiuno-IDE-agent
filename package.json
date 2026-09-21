@@ -2,7 +2,7 @@
   "name": "arduino-first-run-agent",
   "displayName": "Arduino 首次运行守护 Agent",
   "description": "帮助 Arduino IDE 初学者诊断端口、板型、编译和上传问题。",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "team-kexiaofei",
   "license": "MIT",
   "engines": {
