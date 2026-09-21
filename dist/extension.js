@@ -263,12 +263,11 @@ function html() {
   </style></head><body><h2>首次运行守护 Agent</h2><div class="sub">只协助从代码到第一次成功上传</div>
   <div class="label">当前环境</div><div id="env" class="status">尚未读取</div>
   <div class="row"><button id="scan">扫描主板与串口</button><button id="compile" class="secondary">编译当前项目</button><button id="upload" class="secondary">上传并验证</button></div>
-  <div class="label">Agent 建议</div><div id="advice" class="status">先扫描环境。Agent 会把需要你操作的步骤单独标出来。</div>
-  <div class="label">粘贴错误日志</div><textarea id="log" placeholder="也可以把 Arduino IDE 的错误日志粘贴到这里"></textarea><button id="diagnose">诊断日志</button>
+  <div class="label">Agent 建议</div><div id="advice" class="status">先扫描环境。Agent 会自动读取编译和上传日志，并把需要你操作的步骤单独标出来。</div>
   <script>
     const vscode = acquireVsCodeApi();
     const $=id=>document.getElementById(id); function send(type,payload={}){vscode.postMessage({type,...payload})}
-    $('scan').onclick=()=>send('scan');$('compile').onclick=()=>send('compile');$('upload').onclick=()=>send('upload');$('diagnose').onclick=()=>send('diagnose',{text:$('log').value});
+    $('scan').onclick=()=>send('scan');$('compile').onclick=()=>send('compile');$('upload').onclick=()=>send('upload');
     window.addEventListener('message',e=>{const m=e.data;if(m.type==='result'){$('env').textContent=m.env||$('env').textContent;$('advice').textContent=m.advice||m.text||''}});
   </script></body></html>`;
 }
@@ -313,7 +312,6 @@ function start(context) {
                 new AgentItem('环境检查：主板与串口', { command: 'arduinoFirstRunAgent.scan', title: '检查主板与串口' }),
                 new AgentItem('编译检查：当前项目', { command: 'arduinoFirstRunAgent.compile', title: '编译当前项目' }),
                 new AgentItem('上传验证：运行实物', { command: 'arduinoFirstRunAgent.upload', title: '上传并验证' }),
-                new AgentItem('错误诊断：粘贴日志', { command: 'arduinoFirstRunAgent.diagnose', title: '诊断错误日志' }),
                 new AgentItem(`修改记录（${records.length}）`, undefined, plugin.TreeItemCollapsibleState.Expanded, history),
                 ...(records.length ? [new AgentItem('删除修改记录…', { command: 'arduinoFirstRunAgent.deleteRecord', title: '删除修改记录' })] : [])
             ];
@@ -348,13 +346,6 @@ function start(context) {
         const r = await runCli(['upload', '.']);
         r.code === 0 ? plugin.window.showInformationMessage('上传成功，请观察实物运行。') : await showDiagnosis(r.stderr || r.stdout, context, () => agentProvider.refresh());
     }));
-    context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.diagnose', () => {
-        plugin.window.showInputBox({ prompt: '粘贴 Arduino IDE 错误日志', placeHolder: '例如：avrdude、ser_open、error:' }).then(text => {
-            if (!text)
-                return;
-            showDiagnosis(text, context, () => agentProvider.refresh());
-        });
-    }));
     context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.showRecord', async (index) => {
         const record = context.workspaceState.get('changeRecords', [])[index];
         if (!record)
@@ -387,11 +378,6 @@ function start(context) {
         webview.options = { enableScripts: true };
         webview.html = html();
         webview.onDidReceiveMessage(async (message) => {
-            if (message.type === 'diagnose') {
-                const d = diagnosis(String(message.text || ''));
-                webview.postMessage({ type: 'result', advice: `${d.title}：${d.advice}` });
-                return;
-            }
             if (message.type === 'scan') {
                 const ports = await runCli(['board', 'list', '--format', 'json']);
                 const version = await runCli(['version']);
