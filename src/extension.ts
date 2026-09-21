@@ -249,7 +249,8 @@ export function start(context: plugin.ExtensionContext): void {
       return [
         new AgentItem('环境检查：主板与串口', { command: 'arduinoFirstRunAgent.scan', title: '检查主板与串口' }),
         new AgentItem('编译检查：当前项目', { command: 'arduinoFirstRunAgent.compile', title: '编译当前项目' }),
-        new AgentItem('上传验证：运行实物', { command: 'arduinoFirstRunAgent.upload', title: '上传并验证' }),
+        new AgentItem('上传检查：写入开发板', { command: 'arduinoFirstRunAgent.upload', title: '上传并检查' }),
+        new AgentItem('行为确认：实物反馈', { command: 'arduinoFirstRunAgent.behavior', title: '确认实物反馈' }),
         new AgentItem(`修改记录（${records.length}）`, undefined, plugin.TreeItemCollapsibleState.Expanded, history),
         ...(records.length ? [new AgentItem('删除修改记录…', { command: 'arduinoFirstRunAgent.deleteRecord', title: '删除修改记录' })] : [])
       ];
@@ -275,7 +276,25 @@ export function start(context: plugin.ExtensionContext): void {
   }));
   context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.upload', async () => {
     const r = await runCli(['upload', '.']);
-    r.code === 0 ? plugin.window.showInformationMessage('上传成功，请观察实物运行。') : await showDiagnosis(r.stderr || r.stdout, context, () => agentProvider.refresh());
+    if (r.code !== 0) { await showDiagnosis(r.stderr || r.stdout, context, () => agentProvider.refresh()); return; }
+    const result = await plugin.window.showInformationMessage('程序已成功写入开发板。请观察灯光或传感器，再确认实物结果。', '运行正常', '没有反应', '效果不符合预期');
+    if (result === '运行正常') {
+      plugin.window.showInformationMessage('已确认实物运行正常。建议保留当前代码作为成功版本。');
+    } else if (result === '没有反应') {
+      await plugin.commands.executeCommand('arduinoFirstRunAgent.behavior', '没有反应');
+    } else if (result === '效果不符合预期') {
+      await plugin.commands.executeCommand('arduinoFirstRunAgent.behavior', '效果不符合预期');
+    }
+  }));
+  context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.behavior', async (initial?: string) => {
+    const symptom = initial || await plugin.window.showQuickPick(['运行正常', '没有反应', '效果不符合预期'], { placeHolder: '请选择实物运行结果' });
+    if (!symptom || symptom === '运行正常') { plugin.window.showInformationMessage('已确认实物运行正常。'); return; }
+    const detail = await plugin.window.showInputBox({ prompt: '请补充你看到的现象', value: symptom === '没有反应' ? '灯不亮，传感器数值没有明显变化' : '灯光颜色或变化效果与预期不同', placeHolder: '例如：拍手后串口数值不变，灯带一直熄灭' });
+    if (!detail) return;
+    const advice = symptom === '没有反应'
+      ? '建议按顺序检查：1. 传感器信号线是否接在代码指定的引脚；2. 串口数值是否持续变化；3. 灯带 DIN 方向和 GND 是否正确；4. 灯带是否需要独立供电。请先确认接线，再重新上传。'
+      : '建议先保存当前版本，再检查阈值、颜色映射、灯珠数量和更新间隔。一次只调整一个参数，并通过串口样本比较修改前后的变化。';
+    plugin.window.showInformationMessage(`行为诊断：${advice}`, '打开当前代码');
   }));
   context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.showRecord', async (index: number) => {
     const record = context.workspaceState.get<ChangeRecord[]>('changeRecords', [])[index];
