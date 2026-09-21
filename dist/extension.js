@@ -274,6 +274,21 @@ function html() {
 }
 function start(context) {
     let lastScanAt = 0;
+    class RecordDocumentProvider {
+        constructor() {
+            this.content = '# 修改记录\n\n请从左侧选择一条记录。';
+            this.changed = new plugin.EventEmitter();
+            this.onDidChange = this.changed.event;
+            this.uri = plugin.Uri.parse('arduino-agent-record:/修改记录详情.md');
+        }
+        update(record) {
+            this.content = `# 修改记录详情\n\n**修改时间：** ${record.time}\n\n**文件：** ${record.file}\n\n**原因：** ${record.reason}\n\n## 修改前\n\n\`\`\`cpp\n${record.before}\n\`\`\`\n\n## 修改后\n\n\`\`\`cpp\n${record.after}\n\`\`\``;
+            this.changed.fire(this.uri);
+        }
+        provideTextDocumentContent() { return this.content; }
+    }
+    const recordDocument = new RecordDocumentProvider();
+    context.subscriptions.push(plugin.workspace.registerTextDocumentContentProvider('arduino-agent-record', recordDocument));
     class AgentItem extends plugin.TreeItem {
         constructor(label, command, state = plugin.TreeItemCollapsibleState.None, children = []) {
             super(label);
@@ -299,7 +314,8 @@ function start(context) {
                 new AgentItem('编译检查：当前项目', { command: 'arduinoFirstRunAgent.compile', title: '编译当前项目' }),
                 new AgentItem('上传验证：运行实物', { command: 'arduinoFirstRunAgent.upload', title: '上传并验证' }),
                 new AgentItem('错误诊断：粘贴日志', { command: 'arduinoFirstRunAgent.diagnose', title: '诊断错误日志' }),
-                new AgentItem(`修改记录（${records.length}）`, undefined, plugin.TreeItemCollapsibleState.Expanded, history)
+                new AgentItem(`修改记录（${records.length}）`, undefined, plugin.TreeItemCollapsibleState.Expanded, history),
+                ...(records.length ? [new AgentItem('删除修改记录…', { command: 'arduinoFirstRunAgent.deleteRecord', title: '删除修改记录' })] : [])
             ];
         }
     }
@@ -343,9 +359,29 @@ function start(context) {
         const record = context.workspaceState.get('changeRecords', [])[index];
         if (!record)
             return;
-        const body = `修改时间：${record.time}\n文件：${record.file}\n原因：${record.reason}\n\n修改前：\n${record.before}\n\n修改后：\n${record.after}`;
-        const doc = await plugin.workspace.openTextDocument({ language: 'markdown', content: body });
-        await plugin.window.showTextDocument(doc, { preview: true });
+        recordDocument.update(record);
+        const doc = await plugin.workspace.openTextDocument(recordDocument.uri);
+        await plugin.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+    }));
+    context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.deleteRecord', async () => {
+        const records = context.workspaceState.get('changeRecords', []);
+        if (!records.length)
+            return;
+        const choices = [
+            { label: '$(trash) 清空全部记录', description: `删除 ${records.length} 条记录`, index: -1 },
+            ...records.map((record, index) => ({ label: record.reason, description: `${record.time} · ${record.file}`, index }))
+        ];
+        const selected = await plugin.window.showQuickPick(choices, { placeHolder: '选择要删除的修改记录' });
+        if (!selected)
+            return;
+        const message = selected.index === -1 ? `确定清空全部 ${records.length} 条修改记录吗？` : `确定删除“${records[selected.index].reason}”吗？`;
+        const confirmed = await plugin.window.showWarningMessage(message, { modal: true }, '删除');
+        if (confirmed !== '删除')
+            return;
+        const next = selected.index === -1 ? [] : records.filter((_, index) => index !== selected.index);
+        await context.workspaceState.update('changeRecords', next);
+        agentProvider.refresh();
+        plugin.window.showInformationMessage(selected.index === -1 ? '已清空全部修改记录。' : '已删除所选修改记录。');
     }));
     const connect = (webview) => {
         webview.options = { enableScripts: true };
