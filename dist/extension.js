@@ -109,18 +109,64 @@ async function revealError(d) {
     editor.selection = new plugin.Selection(pos, pos);
     editor.revealRange(new plugin.Range(pos, pos), plugin.TextEditorRevealType.InCenter);
 }
+async function revealSemicolonCandidate(d) {
+    if (!d.file || !d.line || !(0, fs_1.existsSync)(d.file))
+        return;
+    const doc = await plugin.workspace.openTextDocument(d.file);
+    const target = findMissingSemicolonLine(doc, d.line);
+    if (target === undefined) {
+        await revealError(d);
+        return;
+    }
+    const editor = await plugin.window.showTextDocument(doc);
+    const pos = new plugin.Position(target, doc.lineAt(target).text.length);
+    editor.selection = new plugin.Selection(pos, pos);
+    editor.revealRange(new plugin.Range(pos, pos), plugin.TextEditorRevealType.InCenter);
+    plugin.window.showInformationMessage(`第 ${d.line} 行是错误暴露位置，建议修改第 ${target + 1} 行。`);
+}
 async function addRecord(context, record, refresh) {
     const records = context.workspaceState.get('changeRecords', []);
     await context.workspaceState.update('changeRecords', [record, ...records].slice(0, 20));
     refresh();
 }
+function findMissingSemicolonLine(doc, reportedLine) {
+    let inBlockComment = false;
+    for (let index = Math.min(doc.lineCount - 1, reportedLine - 2); index >= 0; index--) {
+        const raw = doc.lineAt(index).text;
+        const value = raw.trim();
+        if (!value)
+            continue;
+        if (value.endsWith('*/')) {
+            inBlockComment = true;
+            continue;
+        }
+        if (inBlockComment) {
+            if (value.startsWith('/*'))
+                inBlockComment = false;
+            continue;
+        }
+        if (value.startsWith('//') || value.startsWith('/*') || value.startsWith('*') || value.startsWith('#'))
+            continue;
+        const code = value.replace(/\/\/.*$/, '').trim();
+        if (!code)
+            continue;
+        if (/[;{},:]$/.test(code))
+            continue;
+        if (/^(if|for|while|switch|else|do)\b/.test(code))
+            continue;
+        return index;
+    }
+    return undefined;
+}
 async function fixSemicolon(d, context, refresh) {
     if (!d.file || !d.line || !(0, fs_1.existsSync)(d.file))
         return;
     const doc = await plugin.workspace.openTextDocument(d.file);
-    let target = Math.max(0, d.line - 2);
-    while (target > 0 && !doc.lineAt(target).text.trim())
-        target--;
+    const target = findMissingSemicolonLine(doc, d.line);
+    if (target === undefined) {
+        plugin.window.showWarningMessage(`编译器在第 ${d.line} 行暴露错误，但 Agent 没有找到可以安全补分号的上一条语句。请手动检查附近代码。`);
+        return;
+    }
     const original = doc.lineAt(target).text;
     if (/[;{}]\s*(\/\/.*)?$/.test(original.trim())) {
         plugin.window.showWarningMessage('Agent 没有找到可以安全补分号的位置，请手动检查错误行附近。');
@@ -134,7 +180,7 @@ async function fixSemicolon(d, context, refresh) {
     }
     await doc.save();
     await addRecord(context, { time: new Date().toLocaleString('zh-CN'), file: d.file, reason: `第 ${target + 1} 行补充分号`, before: original, after: `${original};` }, refresh);
-    const selected = await plugin.window.showInformationMessage(`已在第 ${target + 1} 行末尾补上分号，并保存修改记录。`, '重新编译');
+    const selected = await plugin.window.showInformationMessage(`编译器在第 ${d.line} 行暴露错误，实际漏分号的是第 ${target + 1} 行。已补上分号并保存修改记录。`, '重新编译');
     if (selected === '重新编译')
         await plugin.commands.executeCommand('arduinoFirstRunAgent.compile');
 }
@@ -171,10 +217,12 @@ async function showDiagnosis(log, context, refresh) {
     if (d.fixKind === 'library')
         actions.push(d.library ? '自动安装并修正' : '打开库管理器');
     if (d.file && d.line)
-        actions.push('跳到错误行');
+        actions.push(d.fixKind === 'semicolon' ? '跳到建议修改行' : '跳到错误行');
     const selected = await plugin.window.showErrorMessage(`${d.title}：${d.advice}`, ...actions);
     if (selected === '跳到错误行')
         await revealError(d);
+    if (selected === '跳到建议修改行')
+        await revealSemicolonCandidate(d);
     if (selected === '帮我修复')
         await fixSemicolon(d, context, refresh);
     if (selected === '自动安装并修正')

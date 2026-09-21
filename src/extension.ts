@@ -83,17 +83,52 @@ async function revealError(d: Diagnosis): Promise<void> {
   editor.revealRange(new plugin.Range(pos, pos), plugin.TextEditorRevealType.InCenter);
 }
 
+async function revealSemicolonCandidate(d: Diagnosis): Promise<void> {
+  if (!d.file || !d.line || !existsSync(d.file)) return;
+  const doc = await plugin.workspace.openTextDocument(d.file);
+  const target = findMissingSemicolonLine(doc, d.line);
+  if (target === undefined) { await revealError(d); return; }
+  const editor = await plugin.window.showTextDocument(doc);
+  const pos = new plugin.Position(target, doc.lineAt(target).text.length);
+  editor.selection = new plugin.Selection(pos, pos);
+  editor.revealRange(new plugin.Range(pos, pos), plugin.TextEditorRevealType.InCenter);
+  plugin.window.showInformationMessage(`第 ${d.line} 行是错误暴露位置，建议修改第 ${target + 1} 行。`);
+}
+
 async function addRecord(context: plugin.ExtensionContext, record: ChangeRecord, refresh: () => void): Promise<void> {
   const records = context.workspaceState.get<ChangeRecord[]>('changeRecords', []);
   await context.workspaceState.update('changeRecords', [record, ...records].slice(0, 20));
   refresh();
 }
 
+function findMissingSemicolonLine(doc: plugin.TextDocument, reportedLine: number): number | undefined {
+  let inBlockComment = false;
+  for (let index = Math.min(doc.lineCount - 1, reportedLine - 2); index >= 0; index--) {
+    const raw = doc.lineAt(index).text;
+    const value = raw.trim();
+    if (!value) continue;
+    if (value.endsWith('*/')) { inBlockComment = true; continue; }
+    if (inBlockComment) {
+      if (value.startsWith('/*')) inBlockComment = false;
+      continue;
+    }
+    if (value.startsWith('//') || value.startsWith('/*') || value.startsWith('*') || value.startsWith('#')) continue;
+    const code = value.replace(/\/\/.*$/, '').trim();
+    if (!code) continue;
+    if (/[;{},:]$/.test(code)) continue;
+    if (/^(if|for|while|switch|else|do)\b/.test(code)) continue;
+    return index;
+  }
+  return undefined;
+}
+
 async function fixSemicolon(d: Diagnosis, context: plugin.ExtensionContext, refresh: () => void): Promise<void> {
   if (!d.file || !d.line || !existsSync(d.file)) return;
   const doc = await plugin.workspace.openTextDocument(d.file);
-  let target = Math.max(0, d.line - 2);
-  while (target > 0 && !doc.lineAt(target).text.trim()) target--;
+  const target = findMissingSemicolonLine(doc, d.line);
+  if (target === undefined) {
+    plugin.window.showWarningMessage(`编译器在第 ${d.line} 行暴露错误，但 Agent 没有找到可以安全补分号的上一条语句。请手动检查附近代码。`); return;
+  }
   const original = doc.lineAt(target).text;
   if (/[;{}]\s*(\/\/.*)?$/.test(original.trim())) {
     plugin.window.showWarningMessage('Agent 没有找到可以安全补分号的位置，请手动检查错误行附近。'); return;
@@ -103,7 +138,7 @@ async function fixSemicolon(d: Diagnosis, context: plugin.ExtensionContext, refr
   if (!(await plugin.workspace.applyEdit(edit))) { plugin.window.showErrorMessage('自动修改失败。'); return; }
   await doc.save();
   await addRecord(context, { time: new Date().toLocaleString('zh-CN'), file: d.file, reason: `第 ${target + 1} 行补充分号`, before: original, after: `${original};` }, refresh);
-  const selected = await plugin.window.showInformationMessage(`已在第 ${target + 1} 行末尾补上分号，并保存修改记录。`, '重新编译');
+  const selected = await plugin.window.showInformationMessage(`编译器在第 ${d.line} 行暴露错误，实际漏分号的是第 ${target + 1} 行。已补上分号并保存修改记录。`, '重新编译');
   if (selected === '重新编译') await plugin.commands.executeCommand('arduinoFirstRunAgent.compile');
 }
 
@@ -130,9 +165,10 @@ async function showDiagnosis(log: string, context: plugin.ExtensionContext, refr
   const actions: string[] = [];
   if (d.fixKind === 'semicolon') actions.push('帮我修复');
   if (d.fixKind === 'library') actions.push(d.library ? '自动安装并修正' : '打开库管理器');
-  if (d.file && d.line) actions.push('跳到错误行');
+  if (d.file && d.line) actions.push(d.fixKind === 'semicolon' ? '跳到建议修改行' : '跳到错误行');
   const selected = await plugin.window.showErrorMessage(`${d.title}：${d.advice}`, ...actions);
   if (selected === '跳到错误行') await revealError(d);
+  if (selected === '跳到建议修改行') await revealSemicolonCandidate(d);
   if (selected === '帮我修复') await fixSemicolon(d, context, refresh);
   if (selected === '自动安装并修正') await fixLibrary(d, context, refresh);
   if (selected === '打开库管理器') await plugin.commands.executeCommand('arduino.libraryManager');
