@@ -1,0 +1,55 @@
+{
+  "name": "arduino-first-run-agent",
+  "displayName": "Arduino 首次运行守护 Agent",
+  "description": "帮助 Arduino IDE 初学者诊断端口、板型、编译和上传问题。",
+  "version": "0.2.0",
+  "publisher": "team-kexiaofei",
+  "license": "MIT",
+  "engines": {
+    "vscode": ">=1.88.0"
+  },
+  "activationEvents": [
+    "onView:arduinoFirstRunAgent.tree",
+    "onCommand:arduinoFirstRunAgent.open"
+  ],
+  "main": "./dist/extension.js",
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "arduinoFirstRunAgent.open",
+        "title": "Arduino Agent: 打开首次运行守护面板"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "arduinoFirstRunAgent",
+          "title": "Arduino Agent",
+          "icon": "resources/arduino.svg"
+        }
+      ]
+    },
+    "views": {
+      "arduinoFirstRunAgent": [
+        {
+          "id": "arduinoFirstRunAgent.tree",
+          "name": "首次运行守护 Agent"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@theia/plugin": "latest",
+    "@types/node": "latest",
+    "@types/vscode": "^1.88.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "latest"
+  }
+}
