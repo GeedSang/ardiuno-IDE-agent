@@ -100,6 +100,30 @@ function currentSketch() {
 function compileArgs(folder) {
     return ['compile', '--fqbn', 'arduino:avr:uno', '--libraries', (0, path_1.join)((0, os_1.homedir)(), 'Documents', 'Arduino', 'libraries'), folder];
 }
+function projectCode(brief) {
+    const digitalSensor = brief.sensor.includes('数字');
+    const sensorRead = digitalSensor ? `digitalRead(SENSOR_PIN)` : `analogRead(SENSOR_PIN)`;
+    const sensorMode = digitalSensor ? `  pinMode(SENSOR_PIN, INPUT);\n` : '';
+    const threshold = digitalSensor ? 'HIGH' : '500';
+    const outputSetup = brief.output.includes('灯带')
+        ? '// 灯带项目需要安装对应灯带库，并在这里初始化灯带。'
+        : `pinMode(OUTPUT_PIN, OUTPUT);`;
+    const outputWrite = brief.output.includes('蜂鸣器')
+        ? `digitalWrite(OUTPUT_PIN, sensorValue > ${threshold} ? HIGH : LOW);`
+        : brief.output.includes('灯带')
+            ? `// 根据 sensorValue 更新灯带颜色或亮度。`
+            : `analogWrite(OUTPUT_PIN, map(constrain(sensorValue, 0, 1023), 0, 1023, 0, 255));`;
+    return `// 项目目标：${brief.goal}\n// 传感器：${brief.sensor}，输出：${brief.output}\n#define SENSOR_PIN ${brief.sensorPin}\n#define OUTPUT_PIN ${brief.outputPin}\n\nvoid setup() {\n  Serial.begin(115200);\n${sensorMode}  ${outputSetup}\n}\n\nvoid loop() {\n  int sensorValue = ${sensorRead};\n  Serial.println(sensorValue);\n  ${outputWrite}\n  delay(50);\n}\n`;
+}
+function wiringChecklist(brief) {
+    return [
+        `传感器信号线接到 ${brief.sensorPin}`,
+        `${brief.output} 控制线接到 ${brief.outputPin}`,
+        '所有模块 GND 与开发板 GND 共地',
+        'VCC 电压符合模块标注',
+        brief.output.includes('灯带') ? '灯带电流较大时使用独立供电，并保持共地' : '输出部件的正负极或方向已确认'
+    ];
+}
 async function revealError(d) {
     if (!d.file || !d.line || !(0, fs_1.existsSync)(d.file))
         return;
@@ -307,8 +331,11 @@ function start(context) {
             if (element)
                 return element.children;
             const records = context.workspaceState.get('changeRecords', []);
+            const brief = context.workspaceState.get('projectBrief');
             const history = records.map((r, i) => new AgentItem(`${r.time} · ${r.reason}`, { command: 'arduinoFirstRunAgent.showRecord', title: '查看修改记录', arguments: [i] }));
             return [
+                new AgentItem(brief ? `项目方案：${brief.goal}` : '创建项目方案', { command: 'arduinoFirstRunAgent.createProject', title: '创建项目方案' }),
+                new AgentItem(brief?.wiringConfirmed ? '接线确认：已确认' : '接线确认：等待用户', { command: 'arduinoFirstRunAgent.confirmWiring', title: '核对接线' }),
                 new AgentItem('环境检查：主板与串口', { command: 'arduinoFirstRunAgent.scan', title: '检查主板与串口' }),
                 new AgentItem('编译检查：当前项目', { command: 'arduinoFirstRunAgent.compile', title: '编译当前项目' }),
                 new AgentItem('上传检查：写入开发板', { command: 'arduinoFirstRunAgent.upload', title: '上传并检查' }),
@@ -320,6 +347,56 @@ function start(context) {
     }
     const agentProvider = new AgentProvider();
     context.subscriptions.push(plugin.window.registerTreeDataProvider('arduinoFirstRunAgent.tree', agentProvider));
+    context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.createProject', async () => {
+        const goal = await plugin.window.showInputBox({ prompt: '你想让 Arduino 实现什么效果？', placeHolder: '例如：声音越大，LED 越亮' });
+        if (!goal)
+            return;
+        const sensor = await plugin.window.showQuickPick(['模拟传感器（声音、光敏、旋钮等）', '数字传感器（按钮、人体感应等）', '超声波传感器', '其他传感器'], { placeHolder: '选择传感器类型' });
+        if (!sensor)
+            return;
+        const output = await plugin.window.showQuickPick(['普通 LED', '蜂鸣器', 'NeoPixel 灯带', '其他输出部件'], { placeHolder: '选择输出部件' });
+        if (!output)
+            return;
+        const sensorPin = await plugin.window.showInputBox({ prompt: '传感器信号线接在哪个引脚？', value: sensor.includes('模拟') ? 'A0' : '2' });
+        if (!sensorPin)
+            return;
+        const outputPin = await plugin.window.showInputBox({ prompt: `${output} 控制线接在哪个引脚？`, value: output.includes('普通 LED') ? '9' : '5' });
+        if (!outputPin)
+            return;
+        const brief = { goal, sensor, output, sensorPin, outputPin, wiringConfirmed: false };
+        const uri = await plugin.window.showSaveDialog({ title: '保存 Agent 生成的 Arduino 工程', defaultUri: plugin.Uri.file((0, path_1.join)((0, os_1.homedir)(), 'Documents', 'Arduino', 'agent_project', 'agent_project.ino')), filters: { 'Arduino Sketch': ['ino'] } });
+        if (!uri)
+            return;
+        await plugin.workspace.fs.writeFile(uri, Buffer.from(projectCode(brief), 'utf8'));
+        await context.workspaceState.update('projectBrief', brief);
+        agentProvider.refresh();
+        const doc = await plugin.workspace.openTextDocument(uri);
+        await plugin.window.showTextDocument(doc);
+        const selected = await plugin.window.showInformationMessage('已根据目标生成第一版代码。下一步需要核对真实接线。', '开始核对接线');
+        if (selected === '开始核对接线')
+            await plugin.commands.executeCommand('arduinoFirstRunAgent.confirmWiring');
+    }));
+    context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.confirmWiring', async () => {
+        const brief = context.workspaceState.get('projectBrief');
+        if (!brief) {
+            plugin.window.showWarningMessage('请先创建项目方案。');
+            return;
+        }
+        const checks = wiringChecklist(brief).map(label => ({ label, picked: true }));
+        const selected = await plugin.window.showQuickPick(checks, { canPickMany: true, placeHolder: '请只勾选你已经在实物上确认的项目' });
+        if (!selected)
+            return;
+        if (selected.length !== checks.length) {
+            plugin.window.showWarningMessage(`还有 ${checks.length - selected.length} 项接线未确认。Agent 暂不把电路标记为正确。`);
+            return;
+        }
+        brief.wiringConfirmed = true;
+        await context.workspaceState.update('projectBrief', brief);
+        agentProvider.refresh();
+        const next = await plugin.window.showInformationMessage('用户已确认接线清单。Agent 只能验证代码中的引脚是否与清单一致，无法直接看见实物。', '检查环境');
+        if (next === '检查环境')
+            await plugin.commands.executeCommand('arduinoFirstRunAgent.scan');
+    }));
     context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.scan', async () => {
         const now = Date.now();
         if (now - lastScanAt < 1200)
@@ -334,6 +411,11 @@ function start(context) {
         plugin.window.showInformationMessage(`${result.env} · ${result.advice}`);
     }));
     context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.compile', async () => {
+        const brief = context.workspaceState.get('projectBrief');
+        if (brief && !brief.wiringConfirmed) {
+            plugin.window.showWarningMessage('请先完成接线确认，再进入代码检查。');
+            return;
+        }
         const sketch = currentSketch();
         if (!sketch) {
             plugin.window.showWarningMessage('请先打开要检查的 .ino 文件。');
@@ -344,6 +426,11 @@ function start(context) {
         r.code === 0 ? plugin.window.showInformationMessage('当前代码编译成功，可以进入上传验证。') : await showDiagnosis(r.stderr || r.stdout, context, () => agentProvider.refresh());
     }));
     context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.upload', async () => {
+        const brief = context.workspaceState.get('projectBrief');
+        if (brief && !brief.wiringConfirmed) {
+            plugin.window.showWarningMessage('接线尚未确认。为避免错误接线带来的风险，暂不上传。');
+            return;
+        }
         const r = await runCli(['upload', '.']);
         if (r.code !== 0) {
             await showDiagnosis(r.stderr || r.stdout, context, () => agentProvider.refresh());
@@ -369,10 +456,19 @@ function start(context) {
         const detail = await plugin.window.showInputBox({ prompt: '请补充你看到的现象', value: symptom === '没有反应' ? '灯不亮，传感器数值没有明显变化' : '灯光颜色或变化效果与预期不同', placeHolder: '例如：拍手后串口数值不变，灯带一直熄灭' });
         if (!detail)
             return;
+        const brief = context.workspaceState.get('projectBrief');
         const advice = symptom === '没有反应'
             ? '建议按顺序检查：1. 传感器信号线是否接在代码指定的引脚；2. 串口数值是否持续变化；3. 灯带 DIN 方向和 GND 是否正确；4. 灯带是否需要独立供电。请先确认接线，再重新上传。'
             : '建议先保存当前版本，再检查阈值、颜色映射、灯珠数量和更新间隔。一次只调整一个参数，并通过串口样本比较修改前后的变化。';
-        plugin.window.showInformationMessage(`行为诊断：${advice}`, '打开当前代码');
+        const target = brief ? `最初目标：“${brief.goal}”。` : '';
+        const selected = await plugin.window.showInformationMessage(`行为诊断：${target}${advice}`, '打开当前代码', '重新编译');
+        if (selected === '打开当前代码') {
+            const sketch = currentSketch();
+            if (sketch)
+                await plugin.window.showTextDocument(await plugin.workspace.openTextDocument(sketch.file));
+        }
+        if (selected === '重新编译')
+            await plugin.commands.executeCommand('arduinoFirstRunAgent.compile');
     }));
     context.subscriptions.push(plugin.commands.registerCommand('arduinoFirstRunAgent.showRecord', async (index) => {
         const record = context.workspaceState.get('changeRecords', [])[index];
