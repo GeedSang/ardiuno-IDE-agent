@@ -1,16 +1,23 @@
 {
   "name": "arduino-first-run-agent",
-  "displayName": "Arduino 首次运行守护 Agent",
-  "description": "帮助 Arduino IDE 初学者诊断端口、板型、编译和上传问题。",
-  "version": "0.4.0",
+  "displayName": "Arduino 项目 Agent",
+  "description": "引导初学者选择硬件，生成并校验接线与代码，自动安装依赖、编译、修复和保存项目。",
+  "version": "1.14.0",
   "publisher": "team-kexiaofei",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GeedSang/ardiuno-IDE-agent.git"
+  },
+  "homepage": "https://github.com/GeedSang/ardiuno-IDE-agent#readme",
+  "bugs": {
+    "url": "https://github.com/GeedSang/ardiuno-IDE-agent/issues"
+  },
   "engines": {
     "vscode": ">=1.88.0"
   },
   "activationEvents": [
-    "onView:arduinoFirstRunAgent.tree",
-    "onCommand:arduinoFirstRunAgent.open"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "categories": [
@@ -19,31 +26,141 @@
   "contributes": {
     "commands": [
       {
-        "command": "arduinoFirstRunAgent.open",
-        "title": "Arduino Agent: 打开首次运行守护面板"
+        "command": "arduinoFirstRunAgent.openSettings",
+        "title": "Arduino Agent: 配置 AI 服务"
+      },
+      {
+        "command": "arduinoFirstRunAgent.openStartupSettings",
+        "title": "Arduino Agent: 启动设置"
+      },
+      {
+        "command": "arduinoFirstRunAgent.dashboard",
+        "title": "Arduino Agent: 打开项目看板"
+      },
+      {
+        "command": "arduinoFirstRunAgent.toggleDashboard",
+        "title": "⚡ Arduino Agent 看板（打开 / 关闭）"
+      },
+      {
+        "command": "arduinoFirstRunAgent.testAi",
+        "title": "Arduino Agent: 测试 AI 服务"
+      },
+      {
+        "command": "arduinoFirstRunAgent.simulate",
+        "title": "Arduino Agent: 可选仿真验证"
+      },
+      {
+        "command": "arduinoFirstRunAgent.exportCommunity",
+        "title": "Arduino Agent: 导出社区分享包"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
+    "menus": {
+      "editor/title": [
         {
-          "id": "arduinoFirstRunAgent",
-          "title": "Arduino Agent",
-          "icon": "resources/arduino.svg"
+          "command": "arduinoFirstRunAgent.toggleDashboard",
+          "group": "navigation@100"
         }
       ]
     },
-    "views": {
-      "arduinoFirstRunAgent": [
-        {
-          "id": "arduinoFirstRunAgent.tree",
-          "name": "首次运行守护 Agent"
+    "configuration": {
+      "title": "Arduino Agent",
+      "properties": {
+        "arduinoAgent.apiKey": {
+          "type": "string",
+          "description": "所选 AI 服务提供的 API Key；本机 Ollama 通常不需要。也可使用 OPENAI_API_KEY 环境变量。",
+          "scope": "machine",
+          "sensitive": true
+        },
+        "arduinoAgent.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai",
+            "compatible"
+          ],
+          "default": "ollama",
+          "description": "AI 服务类型，可使用本地模型、OpenAI 或其他提供 API 的模型服务。"
+        },
+        "arduinoAgent.apiMode": {
+          "type": "string",
+          "enum": [
+            "chat-completions",
+            "responses"
+          ],
+          "default": "chat-completions",
+          "description": "AI 服务支持的调用协议。多数兼容服务使用 Chat Completions。"
+        },
+        "arduinoAgent.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "AI 服务 API 的 v1 基础地址；本机 Ollama 默认使用 http://localhost:11434/v1。"
+        },
+        "arduinoAgent.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "兼容旧版的快速模型设置。完整项目流程优先使用下方代码模型。"
+        },
+        "arduinoAgent.codeModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "可选的代码模型覆盖。外部API未单独设置时自动使用上方通用模型；本地Ollama默认使用14B。"
+        },
+        "arduinoAgent.planningModel": {
+          "type": "string",
+          "default": "",
+          "description": "可选的需求理解和硬件规划模型。留空时使用通用模型。"
+        },
+        "arduinoAgent.reviewModel": {
+          "type": "string",
+          "default": "",
+          "description": "可选的独立代码审查模型。留空时使用通用模型；可填写不同模型进行交叉审查。"
+        },
+        "arduinoAgent.ollamaPath": {
+          "type": "string",
+          "default": "D:\\AI\\Ollama\\ollama.exe",
+          "description": "本机 Ollama 可执行文件路径。Agent 在服务未启动时会自动运行 ollama serve。",
+          "scope": "machine"
+        },
+        "arduinoAgent.projectRoot": {
+          "type": "string",
+          "default": "D:\\ArduinoProjects",
+          "description": "Agent 新建 Arduino 工程的默认保存目录。建议使用非系统盘。",
+          "scope": "machine"
+        },
+        "arduinoAgent.hardwarePackPath": {
+          "type": "string",
+          "default": "D:\\ArduinoAgentData\\hardware-packs\\fritzing-core",
+          "description": "离线硬件图片扩展包目录。目录中应包含 catalog.json 和 images。",
+          "scope": "machine"
+        },
+        "arduinoAgent.simulidePath": {
+          "type": "string",
+          "default": "",
+          "description": "可选的 SimulIDE 可执行文件路径。留空时仿真显示为不可用。",
+          "scope": "machine"
+        },
+        "arduinoAgent.startWithNewProject": {
+          "type": "boolean",
+          "default": true,
+          "description": "Arduino IDE 启动时创建新的空白 Arduino 草稿，并显示新的项目输入状态；关闭后保留 IDE 自己的文件恢复行为。",
+          "scope": "machine"
+        },
+        "arduinoAgent.openDashboardOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Arduino IDE 启动时自动打开 Arduino Agent 项目看板；关闭后仍可从编辑器顶部手动打开。",
+          "scope": "machine"
         }
-      ]
+      }
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node tests/cliRecovery.test.js && node tests/workflow.test.js && node tests/projectMatrix.test.js && node tests/benchmark.test.js && node tests/hardwareCatalog.test.js && node tests/hardwareCapabilities.test.js && node tests/hardwareContracts.test.js && node tests/componentClassification.test.js && node tests/hardwareImages.test.js && node tests/libraryIndex.test.js && node tests/aiResponse.test.js && node tests/modelJson.test.js && node tests/webviewScript.test.js && node tests/productFlow.test.js && node tests/interactionIntegrity.test.js",
     "watch": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@theia/plugin": "latest",
